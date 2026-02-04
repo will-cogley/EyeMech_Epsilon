@@ -24,10 +24,19 @@ INVOKE_INTERVAL_MS = 500 # Adjust this: faster interval means more frames/sec
 INVOKE_CMD = b"AT+INVOKE=1,0,1\r"
 cbuf = []
 readflag = True
+staticflag = False
 last_boxes = None
-deadzone = 10
+deadzone = 8
 x_offset = 0
 y_offset = 0
+x_adj_factor = 1
+y_adj_factor = 1
+pixel_centre = 112
+tl_target = 90
+tr_target = 90
+bl_target = 90
+br_target = 90
+
 
 # Define servos
 servos = {
@@ -50,7 +59,7 @@ servo_limits = {
 }
 
 def continuous_read():
-    global cbuf, readflag, last_boxes, x_offset, y_offset
+    global cbuf, readflag, staticflag, last_boxes, x_offset, y_offset
     if readflag == True:
         while uart1.any():
             uart1.read()
@@ -70,11 +79,15 @@ def continuous_read():
                     boxes_part = boxes_part[:boxes_part.find(b']') + 1]
                     boxes_part = boxes_part.strip()
                     if boxes_part != b'[]' and boxes_part != last_boxes:
+                        staticflag = False
                         boxes_str = boxes_part.decode('utf-8').strip('[]')
                         numbers = [int(n) for n in boxes_str.split(',')]
-                        x_offset, y_offset = numbers[0], numbers[1]
+                        x_offset, y_offset = numbers[0] - pixel_centre, numbers[1] - pixel_centre
 #                         print("x: ", x_offset, "y: ", y_offset)
                         last_boxes = boxes_part
+                    else:
+                        x_offset, y_offset = 0, 0
+                        staticflag = True
                 cbuf = b""
                 readflag = True
 
@@ -94,22 +107,7 @@ def neutral():
         max_angle = servo_limits[servo][1]  # Get min angle
         servos[servo].write(max_angle)  # Move to min      
         
-def move_servo_random(servo):
-    """Moves the servo to a random position within its defined range."""
-    min_angle, max_angle = servo_limits[servo]  # Get range from dictionary
-    random_angle = random.randint(min_angle, max_angle)  # Get random value
-    servos[servo].write(random_angle)
-    print(f"Moved {servo} to {random_angle}°")  # Debug output
-#     move_servo_random("LR")
 
-def move_servo_extremes(servo, delay): # Moves the servo between its min and max values
-    min_angle, max_angle = servo_limits[servo]
-    servos[servo].write(min_angle)  # Move to min position
-    print(min_angle)
-    time.sleep_ms(delay)
-    servos[servo].write(max_angle)  # Move to max position
-    print(max_angle)
-    time.sleep_ms(delay)
     
 def blink():
     lids = list(servos.keys())[-4:]  # Get last 4 servo names
@@ -118,6 +116,7 @@ def blink():
         servos[servo].write(min_angle)  # Move to min
         
 def control_ud_and_lids(ud_angle): # Moves UD servo and makes TL/TR follow instantly based on UD's position
+    global tl_target, tr_target, bl_target, br_target
     # Get limits
     ud_min, ud_max = servo_limits["UD"]
     tl_min, tl_max = servo_limits["TL"]
@@ -154,102 +153,57 @@ def scale_potentiometer(pot_value, servo, reverse=False):
        scaled_value = max_limit - (scaled_value - min_limit)
     return scaled_value
 
-def update_eyelid_limits(trim_value):
-    # Define the trim value range
-    trim_min = 7000
-    trim_max = 14500
-    
-    # Target max ranges for each eyelid servo
-    TL_max_range = (130, 170)  # from most closed to most open
-    BR_max_range = (130, 170)
-    BL_max_range = (50, 10)    # reversed range
-    TR_max_range = (50, 10)
-    
-    # Scale trim_value to target max ranges
-    trim_progress = (trim_value - trim_min) / (trim_max - trim_min)  # 0 (closed) to 1 (open)
-    trim_progress = max(0, min(1, trim_progress))  # Clamp to [0, 1] range
-
-    # Update servo limits
-    servo_limits["TL"] = (90, TL_max_range[0] + (TL_max_range[1] - TL_max_range[0]) * trim_progress)
-    servo_limits["BR"] = (90, BR_max_range[0] + (BR_max_range[1] - BR_max_range[0]) * trim_progress)
-    servo_limits["BL"] = (90, BL_max_range[0] + (BL_max_range[1] - BL_max_range[0]) * trim_progress)
-    servo_limits["TR"] = (90, TR_max_range[0] + (TR_max_range[1] - TR_max_range[0]) * trim_progress)
-
-#     print("Updated servo limits:")
-#     print(servo_limits)
 
 def map_value(value, in_min, in_max, out_min, out_max):
     # Map the value
     mapped = (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
     return mapped
         
-xt = 90
+x_target = 90
+y_target = 90
+adjustment_factor = 0
 
+neutral()
+
+blink_time = 50
+blinking = False
         
 while True:
-    continuous_read()
-#     targ = int(map_value(x_offset, 0, 225, 40, 140))
-#     print(targ)
-#     print(".", end="")
-    mode_state = not mode.value()
-    enable_state = not enable.value()
-    if mode_state == 1: # Enter calibration mode when switch is in hold position
-        if x_offset < 112 - deadzone:
-            xt += 1
-            servos["LR"].write(xt)
-        if x_offset > 112 + deadzone:
-            xt -= 1
-            servos["LR"].write(xt)
-#         calibrate()
-#         time.sleep_ms(500)
-        time.sleep_ms(2)
-    elif enable_state == 0: # Auto mode
-        time.sleep_ms(2)
-#         if 112 - deadzone <= x_offset <= 112 + deadzone:
-#             targ = map_value(x_offset, 0, 225, 40, 140)
-#             if x_offset != old_xt:
-#                 print(x_offset)
-#                 servos["LR"].write(targ)
-#             old_xt = x_offset
-    
-                
-#             if 112 - deadzone <= y_offset <= 112 + deadzone:
-#                 print("y offset")
-#             time.sleep_ms(2)
-            
-#             command = random.randint(0,2)
-#             if command == 0:
-#                 blink()
-#                 time.sleep_ms(100)
-#             elif command == 1:
-#                 blink()
-#                 time.sleep_ms(100)
-#                 control_ud_and_lids(random.randint(servo_limits["UD"][0],servo_limits["UD"][1]))
-#                 servos["LR"].write(random.randint(servo_limits["LR"][0],servo_limits["LR"][1]))
-#                 time.sleep_ms(random.randint(300,1000))
-#             elif command == 2:
-#                 control_ud_and_lids(random.randint(servo_limits["UD"][0],servo_limits["UD"][1]))
-#                 servos["LR"].write(random.randint(servo_limits["LR"][0],servo_limits["LR"][1]))
-#                 time.sleep_ms(random.randint(200,400))
-#         elif enable_state == 1: # Controller mode
-#             # Reading sensors
-#             UD_value = UD.read_u16()
-#             trim_value = trim.read_u16()
-#             LR_value = LR.read_u16()
-#             blink_state = not blink_pin.value()
-#     
-#             update_eyelid_limits(trim_value)
-            
-#             if blink_state == 0:
-#                 blink()
-#             else:
-#                 servos["LR"].write(scale_potentiometer(LR_value, "LR", reverse = True))
-#                 control_ud_and_lids(scale_potentiometer(UD_value, "UD"))
-#             time.sleep_ms(10)
+    continuous_read() # Updates x and y offset by looking at camera
+    if not blinking and random.randrange(500) == 0:
+        blinking = True
+        blink_counter = blink_time
         
-        
+    # --- blinking state ---
+    if blinking:
+        if blink_counter > blink_time - 10:
+            # closed
+            servos["TL"].write(servo_limits["TL"][0])
+            servos["TR"].write(servo_limits["TR"][0])
+            servos["BL"].write(servo_limits["BL"][0])
+            servos["BR"].write(servo_limits["BR"][0])
 
-        
+        elif blink_counter > 0:
+            # reopen
+            servos["TL"].write(tl_target)
+            servos["TR"].write(tr_target)
+            servos["BL"].write(bl_target)
+            servos["BR"].write(br_target)
 
+        blink_counter -= 1
 
+        if blink_counter == 0:
+            blinking = False
+    else:
+        if (x_offset < -deadzone or x_offset > deadzone) and not staticflag:
+            x_adj_value = map_value(x_offset, -110, 110, x_adj_factor, -x_adj_factor)
+            x_target = max(servo_limits["LR"][0],
+                           min(x_target + x_adj_value, servo_limits["LR"][1]))
+            servos["LR"].write(x_target)
 
+        if (y_offset < -deadzone or y_offset > deadzone) and not staticflag:
+            y_adj_value = map_value(y_offset, -110, 110, y_adj_factor, -y_adj_factor)
+            y_target = max(servo_limits["UD"][0],
+                           min(y_target + y_adj_value, servo_limits["UD"][1]))
+            control_ud_and_lids(y_target)
+    time.sleep_ms(1)
