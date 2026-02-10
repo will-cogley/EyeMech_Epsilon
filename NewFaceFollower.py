@@ -10,6 +10,7 @@ from machine import Pin, I2C, ADC, UART
 from servo import Servo
 from picozero import Button
 import time, random, ujson, urandom, sys, select, uselect, math
+#test change
 
 # Set up the switches and potentiometers
 enable = Pin(6, Pin.IN, Pin.PULL_UP)
@@ -207,3 +208,4 @@ while True:
                            min(y_target + y_adj_value, servo_limits["UD"][1]))
             control_ud_and_lids(y_target)
     time.sleep_ms(1)
+
