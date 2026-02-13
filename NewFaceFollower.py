@@ -26,6 +26,13 @@ cbuf = []
 readflag = True
 staticflag = False
 last_boxes = None
+detected_flag = False
+static_target = 200
+static_timer = static_target
+idle_flag = False
+idle_pause = 300
+
+
 deadzone = 8
 x_offset = 0
 y_offset = 0
@@ -88,8 +95,10 @@ def continuous_read():
                     else:
                         x_offset, y_offset = 0, 0
                         staticflag = True
+                    
                 cbuf = b""
                 readflag = True
+            time.sleep_ms(5)
 
 # Set all servos to central position for assembly
 def calibrate():
@@ -104,7 +113,7 @@ def neutral():
         servo.write(90)
     lids = list(servos.keys())[-4:]  # Get last 4 servo names
     for servo in lids:
-        max_angle = servo_limits[servo][1]  # Get min angle
+        max_angle = servo_limits[servo][1]  # Get max angle
         servos[servo].write(max_angle)  # Move to min      
         
 
@@ -163,13 +172,27 @@ x_target = 90
 y_target = 90
 adjustment_factor = 0
 
+# print("Hello")
+
+blink()
+time.sleep_ms(50)
 neutral()
+uart1.write(INVOKE_CMD)
+time.sleep_ms(250)
+# time.sleep_ms(2500)
+
+
+# print("Neutral")
+
 
 blink_time = 50
 blinking = False
         
 while True:
     continuous_read() # Updates x and y offset by looking at camera
+#     print(static_timer)
+#     if staticflag == False:
+#         static_timer = static_target
     if not blinking and random.randrange(500) == 0:
         blinking = True
         blink_counter = blink_time
@@ -182,19 +205,18 @@ while True:
             servos["TR"].write(servo_limits["TR"][0])
             servos["BL"].write(servo_limits["BL"][0])
             servos["BR"].write(servo_limits["BR"][0])
-
         elif blink_counter > 0:
             # reopen
             servos["TL"].write(tl_target)
             servos["TR"].write(tr_target)
             servos["BL"].write(bl_target)
             servos["BR"].write(br_target)
-
         blink_counter -= 1
-
+        
+#         print(blink_counter)
         if blink_counter == 0:
             blinking = False
-    else:
+    else: # Track Mode
         if (x_offset < -deadzone or x_offset > deadzone) and not staticflag:
             x_adj_value = map_value(x_offset, -110, 110, x_adj_factor, -x_adj_factor)
             x_target = max(servo_limits["LR"][0],
@@ -206,4 +228,24 @@ while True:
             y_target = max(servo_limits["UD"][0],
                            min(y_target + y_adj_value, servo_limits["UD"][1]))
             control_ud_and_lids(y_target)
+#     if staticflag == True:
+#         if static_timer == 0: # Idle Mode
+#             if idle_flag == False:
+#                 idle_flag = True
+#                 idle_pause = (random.randint(100,1000))
+#                 blink()
+#                 time.sleep_ms(80)
+#                 servos["TL"].write(tl_target)
+#                 servos["TR"].write(tr_target)
+#                 servos["BL"].write(bl_target)
+#                 servos["BR"].write(br_target)
+#                 servos["LR"].write(random.randint(servo_limits["LR"][0]+30, servo_limits["LR"][1]-30))
+#                 control_ud_and_lids(random.randint(servo_limits["UD"][0]+50, servo_limits["UD"][1]-30))
+#             else:
+#                 idle_pause -= 1
+#                 time.sleep_ms(2)
+#                 if idle_pause <= 0:
+#                     idle_flag = False
+#         else:
+#             static_timer -= 1
     time.sleep_ms(1)
