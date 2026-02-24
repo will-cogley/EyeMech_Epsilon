@@ -10,11 +10,11 @@ from machine import Pin, I2C, ADC, UART
 from servo import Servo
 from picozero import Button
 import time, random, ujson, urandom, sys, select, uselect, math
-#test change
 
 # Set up the switches and potentiometers
 enable = Pin(6, Pin.IN, Pin.PULL_UP)
 mode = Pin(7, Pin.IN, Pin.PULL_UP)
+rx_pin = Pin(1, Pin.IN, Pin.PULL_UP)
 blink_pin = Pin(9, Pin.IN, Pin.PULL_UP)
 UD = ADC(26)
 trim = ADC(27)
@@ -27,6 +27,13 @@ cbuf = []
 readflag = True
 staticflag = False
 last_boxes = None
+detected_flag = False
+static_target = 200
+static_timer = static_target
+idle_flag = False
+idle_pause = 300
+
+
 deadzone = 8
 x_offset = 0
 y_offset = 0
@@ -60,10 +67,11 @@ servo_limits = {
 }
 
 def continuous_read():
-    global cbuf, readflag, staticflag, last_boxes, x_offset, y_offset
+    global cbuf, readflag, staticflag, last_boxes, x_offset, y_offset, grove_vision_module
     if readflag == True:
         while uart1.any():
             uart1.read()
+            grove_vision_module = True
         uart1.write(INVOKE_CMD)
         cbuf = b""
         readflag = False
@@ -89,8 +97,10 @@ def continuous_read():
                     else:
                         x_offset, y_offset = 0, 0
                         staticflag = True
+                    
                 cbuf = b""
                 readflag = True
+            time.sleep_ms(5)
 
 # Set all servos to central position for assembly
 def calibrate():
@@ -105,16 +115,28 @@ def neutral():
         servo.write(90)
     lids = list(servos.keys())[-4:]  # Get last 4 servo names
     for servo in lids:
-        max_angle = servo_limits[servo][1]  # Get min angle
+        max_angle = servo_limits[servo][1]  # Get max angle
         servos[servo].write(max_angle)  # Move to min      
         
 
     
-def blink():
+def close_lid():
     lids = list(servos.keys())[-4:]  # Get last 4 servo names
     for servo in lids:
         min_angle = servo_limits[servo][0]  # Get min angle
         servos[servo].write(min_angle)  # Move to min
+
+def blink():
+    servos["TL"].write(servo_limits["TL"][0])
+    servos["TR"].write(servo_limits["TR"][0])
+    servos["BL"].write(servo_limits["BL"][0])
+    servos["BR"].write(servo_limits["BR"][0])
+        
+def open_lid():        
+    servos["TL"].write(tl_target)
+    servos["TR"].write(tr_target)
+    servos["BL"].write(bl_target)
+    servos["BR"].write(br_target)  
         
 def control_ud_and_lids(ud_angle): # Moves UD servo and makes TL/TR follow instantly based on UD's position
     global tl_target, tr_target, bl_target, br_target
@@ -159,53 +181,138 @@ def map_value(value, in_min, in_max, out_min, out_max):
     # Map the value
     mapped = (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
     return mapped
-        
+       
+def update_eyelid_limits(trim_value):
+    # Define the trim value range
+    trim_min = 7000
+    trim_max = 14500
+    
+    # Target max ranges for each eyelid servo
+    TL_max_range = (130, 170)  # from most closed to most open
+    BR_max_range = (130, 170)
+    BL_max_range = (50, 10)    # reversed range
+    TR_max_range = (50, 10)
+    
+    # Scale trim_value to target max ranges
+    trim_progress = (trim_value - trim_min) / (trim_max - trim_min)  # 0 (closed) to 1 (open)
+    trim_progress = max(0, min(1, trim_progress))  # Clamp to [0, 1] range
+
+    # Update servo limits
+    servo_limits["TL"] = (90, TL_max_range[0] + (TL_max_range[1] - TL_max_range[0]) * trim_progress)
+    servo_limits["BR"] = (90, BR_max_range[0] + (BR_max_range[1] - BR_max_range[0]) * trim_progress)
+    servo_limits["BL"] = (90, BL_max_range[0] + (BL_max_range[1] - BL_max_range[0]) * trim_progress)
+    servo_limits["TR"] = (90, TR_max_range[0] + (TR_max_range[1] - TR_max_range[0]) * trim_progress)
+
+#     print("Updated servo limits:")
+#     print(servo_limits)
+
 x_target = 90
 y_target = 90
 adjustment_factor = 0
 
+# print("Hello")
+
+open_lid()
+time.sleep_ms(50)
 neutral()
+uart1.write(INVOKE_CMD)
+time.sleep_ms(250)
+# time.sleep_ms(2500)
+
+
+grove_vision_module = False
+
 
 blink_time = 50
 blinking = False
+
+work_mode = "tracking"
         
 while True:
-    continuous_read() # Updates x and y offset by looking at camera
-    if not blinking and random.randrange(500) == 0:
-        blinking = True
-        blink_counter = blink_time
+    mode_state = not mode.value()
+    enable_state = not enable.value()
+    if mode_state == 1: # Enter calibration mode when switch is in hold position
+        work_mode = "calibration"
+    else:       
+        if enable_state == 1: # Controller mode
+            work_mode = "controller"            
+
+    if work_mode == "tracking":
+        continuous_read() # Updates x and y offset by looking at camera
+    #     print(static_timer)
+    #     if staticflag == False:
+    #         static_timer = static_target
+        if not blinking and random.randrange(500) == 0:
+            blinking = True
+            blink_counter = blink_time
+            
+        # --- blinking state ---
+        if blinking:
+            if blink_counter > blink_time - 10:
+                blink()
+            elif blink_counter > 0:
+                open_lid()
+                
+            blink_counter -= 1
+            
+    #         print(blink_counter)
+            if blink_counter == 0:
+                blinking = False
+        else: # Track Mode
+            if (x_offset < -deadzone or x_offset > deadzone) and not staticflag:
+                x_adj_value = map_value(x_offset, -110, 110, x_adj_factor, -x_adj_factor)
+                x_target = max(servo_limits["LR"][0],
+                               min(x_target + x_adj_value, servo_limits["LR"][1]))
+                servos["LR"].write(x_target)
+
+            if (y_offset < -deadzone or y_offset > deadzone) and not staticflag:
+                y_adj_value = map_value(y_offset, -110, 110, y_adj_factor, -y_adj_factor)
+                y_target = max(servo_limits["UD"][0],
+                               min(y_target + y_adj_value, servo_limits["UD"][1]))
+                control_ud_and_lids(y_target)
+        time.sleep_ms(1)
+    elif work_mode == "calibration":
+            calibrate()
+            time.sleep_ms(500)
+            work_mode = "initilisation"
+    elif work_mode == "initilisation":
+            blink()
+            work_mode = "tracking"
+    elif work_mode == "controller":
+            # Reading sensors
+            UD_value = UD.read_u16()
+            trim_value = trim.read_u16()
+            LR_value = LR.read_u16()
+            blink_state = not blink_pin.value()
+    
+            update_eyelid_limits(trim_value)
+            
+            if blink_state == 0:
+                blink()
+            else:
+                servos["LR"].write(scale_potentiometer(LR_value, "LR", reverse = True))
+                control_ud_and_lids(scale_potentiometer(UD_value, "UD"))
+            time.sleep_ms(10)
+    elif work_mode == "auto":
+            command = random.randint(0,2)
+            if command == 0:
+                close_lid()
+                time.sleep_ms(100)
+            elif command == 1:
+                blink()
+                time.sleep_ms(100)
+                control_ud_and_lids(random.randint(servo_limits["UD"][0],servo_limits["UD"][1]))
+                servos["LR"].write(random.randint(servo_limits["LR"][0],servo_limits["LR"][1]))
+                time.sleep_ms(random.randint(300,1000))
+            elif command == 2:
+                control_ud_and_lids(random.randint(servo_limits["UD"][0],servo_limits["UD"][1]))
+                servos["LR"].write(random.randint(servo_limits["LR"][0],servo_limits["LR"][1]))
+                time.sleep_ms(random.randint(200,400))    
+
         
-    # --- blinking state ---
-    if blinking:
-        if blink_counter > blink_time - 10:
-            # closed
-            servos["TL"].write(servo_limits["TL"][0])
-            servos["TR"].write(servo_limits["TR"][0])
-            servos["BL"].write(servo_limits["BL"][0])
-            servos["BR"].write(servo_limits["BR"][0])
-
-        elif blink_counter > 0:
-            # reopen
-            servos["TL"].write(tl_target)
-            servos["TR"].write(tr_target)
-            servos["BL"].write(bl_target)
-            servos["BR"].write(br_target)
-
-        blink_counter -= 1
-
-        if blink_counter == 0:
-            blinking = False
-    else:
-        if (x_offset < -deadzone or x_offset > deadzone) and not staticflag:
-            x_adj_value = map_value(x_offset, -110, 110, x_adj_factor, -x_adj_factor)
-            x_target = max(servo_limits["LR"][0],
-                           min(x_target + x_adj_value, servo_limits["LR"][1]))
-            servos["LR"].write(x_target)
-
-        if (y_offset < -deadzone or y_offset > deadzone) and not staticflag:
-            y_adj_value = map_value(y_offset, -110, 110, y_adj_factor, -y_adj_factor)
-            y_target = max(servo_limits["UD"][0],
-                           min(y_target + y_adj_value, servo_limits["UD"][1]))
-            control_ud_and_lids(y_target)
-    time.sleep_ms(1)
-
+    if grove_vision_module != True:
+         work_mode = "auto"
+    
+#     if work_mode != work_mode_copy
+    
+    
