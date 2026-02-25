@@ -19,7 +19,7 @@ blink_pin = Pin(9, Pin.IN, Pin.PULL_UP)
 UD = ADC(26)
 trim = ADC(27)
 LR = ADC(28)
-uart1 = UART(0, baudrate=921600, tx=Pin(0), rx=Pin(1))
+#uart1 = UART(0, baudrate=921600, tx=Pin(0), rx=Pin(1))
 
 INVOKE_INTERVAL_MS = 500 # Adjust this: faster interval means more frames/sec
 INVOKE_CMD = b"AT+INVOKE=1,0,1\r"
@@ -34,11 +34,11 @@ idle_flag = False
 idle_pause = 300
 
 
-deadzone = 8
+deadzone = 3
 x_offset = 0
 y_offset = 0
-x_adj_factor = 1
-y_adj_factor = 1
+x_adj_factor = 10
+y_adj_factor = 10
 pixel_centre = 112
 tl_target = 90
 tr_target = 90
@@ -66,42 +66,6 @@ servo_limits = {
     "BR": (90, 160),
 }
 
-def continuous_read():
-    global cbuf, readflag, staticflag, last_boxes, x_offset, y_offset, grove_vision_module
-    if readflag == True:
-        while uart1.any():
-            uart1.read()
-            grove_vision_module = True
-        uart1.write(INVOKE_CMD)
-        cbuf = b""
-        readflag = False
-    if readflag == False:
-        if uart1.any():
-            data = uart1.read()
-            for ch in data:
-                cbuf += bytes([ch]) 
-            if b'"resolution"' in cbuf:
-                key = b'"boxes":'
-                i = cbuf.find(key)
-                if i != -1:
-                    boxes_part = cbuf[i + len(key):]
-                    boxes_part = boxes_part[:boxes_part.find(b']') + 1]
-                    boxes_part = boxes_part.strip()
-                    if boxes_part != b'[]' and boxes_part != last_boxes:
-                        staticflag = False
-                        boxes_str = boxes_part.decode('utf-8').strip('[]')
-                        numbers = [int(n) for n in boxes_str.split(',')]
-                        x_offset, y_offset = numbers[0] - pixel_centre, numbers[1] - pixel_centre
-#                         print("x: ", x_offset, "y: ", y_offset)
-                        last_boxes = boxes_part
-                    else:
-                        x_offset, y_offset = 0, 0
-                        staticflag = True
-                    
-                cbuf = b""
-                readflag = True
-            time.sleep_ms(5)
-
 # Set all servos to central position for assembly
 def calibrate():
     for name, servo in servos.items():
@@ -117,15 +81,7 @@ def neutral():
     for servo in lids:
         max_angle = servo_limits[servo][1]  # Get max angle
         servos[servo].write(max_angle)  # Move to min      
-        
-
-    
-def close_lid():
-    lids = list(servos.keys())[-4:]  # Get last 4 servo names
-    for servo in lids:
-        min_angle = servo_limits[servo][0]  # Get min angle
-        servos[servo].write(min_angle)  # Move to min
-
+          
 def blink():
     servos["TL"].write(servo_limits["TL"][0])
     servos["TR"].write(servo_limits["TR"][0])
@@ -203,74 +159,151 @@ def update_eyelid_limits(trim_value):
     servo_limits["BL"] = (90, BL_max_range[0] + (BL_max_range[1] - BL_max_range[0]) * trim_progress)
     servo_limits["TR"] = (90, TR_max_range[0] + (TR_max_range[1] - TR_max_range[0]) * trim_progress)
 
-#     print("Updated servo limits:")
-#     print(servo_limits)
+class Comms:
+    def __init__(self):
+        # Hardware Initialization
+        self.grove = UART(0, baudrate=921600, tx=Pin(0), rx=Pin(1))
+        #self.esp = UART(1, baudrate=115200, tx=Pin(4), rx=Pin(5))
+        
+        # Constants
+        self.INVOKE_CMD = b"AT+INVOKE=1,0,1\r"
+        self.pixel_centre = 112
+        self.deadzone = 20
+        self.x_adj_factor = 10
+        self.y_adj_factor = 10
+        self.staticflag = False
+        
+        # Buffers and State
+        self.cbuf = b""
+        self.rx_buffer = b""
+        self.readflag = True
+        self.last_boxes = None
+        
+        self.grove.write(self.INVOKE_CMD)
+        self.grove_vision_module = False
+
+    def map_value(self, value, in_min, in_max, out_min, out_max):
+        return (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
+
+    def grove_read(self):
+        # State 1: Requesting data
+        if self.readflag:
+            # Flush existing buffer quickly
+            while self.grove.any():
+                self.grove.read()
+                self.grove_vision_module = True
+            self.grove.write(self.INVOKE_CMD)
+            self.cbuf = b""
+            self.readflag = False
+            return None # Return early, data isn't ready yet
+
+        # State 2: Receiving data
+        if self.grove.any():
+            # PERFORMANCE: Read chunks directly instead of looping char by char
+            self.cbuf += self.grove.read()
+            
+            # Wait until the end of the JSON packet arrives
+            if b'"resolution"' in self.cbuf:
+                key = b'"boxes":'
+                i = self.cbuf.find(key)
+                
+                if i != -1:
+                    boxes_part = self.cbuf[i + len(key):]
+                    
+                    # Ensure we have the closing bracket before slicing
+                    end_idx = boxes_part.find(b']')
+                    if end_idx != -1:
+                        boxes_part = boxes_part[:end_idx + 1].strip()
+                        
+                        # Process if we have valid, new box data
+                        if boxes_part != b'[]' and boxes_part != self.last_boxes:
+                            self.staticflag = False
+                            self.last_boxes = boxes_part
+                            boxes_str = boxes_part.decode('utf-8').strip('[]')
+                            
+                            try:
+                                numbers = [int(n) for n in boxes_str.split(',')]
+                                x_offset = numbers[0] - self.pixel_centre
+                                y_offset = numbers[1] - self.pixel_centre
+                                
+                                # Reset for next read
+                                self.cbuf = b""
+                                self.readflag = True
+                                return x_offset, y_offset
+                                
+                            except ValueError:
+                                # Handle cases where split data isn't a perfect integer
+                                pass
+                        else:
+                            # Reset for next read (static or empty data)
+                            self.cbuf = b""
+                            self.readflag = True
+                            self.staticflag = True
+                            return None
+                            
+        return None
 
 x_target = 90
 y_target = 90
 adjustment_factor = 0
 
-# print("Hello")
-
 open_lid()
-time.sleep_ms(50)
 neutral()
-uart1.write(INVOKE_CMD)
-time.sleep_ms(250)
-# time.sleep_ms(2500)
 
-
-grove_vision_module = False
-
-
-blink_time = 50
+blink_time = 200
+blink_time_half = blink_time / 2
 blinking = False
 
-work_mode = "tracking"
+#Detect if 
+comms = Comms()
+time.sleep_ms(100) #wait for a short time to see if grove_vision_module flag has been set
+comms.grove_read()
+if comms.grove_vision_module == True:
+    work_mode = "tracking"
+else:
+    work_mode = "auto"
         
 while True:
+    work_mode_copy = work_mode
     mode_state = not mode.value()
     enable_state = not enable.value()
     if mode_state == 1: # Enter calibration mode when switch is in hold position
         work_mode = "calibration"
     else:       
-        if enable_state == 1: # Controller mode
-            work_mode = "controller"            
+        if enable_state == 1: # switch Controller mode if pin enable is true
+            work_mode = "controller"
+        elif work_mode == "controller": #swithch to tracking mode if already controller mode and pin enable is false
+            work_mode = "tracking"
 
     if work_mode == "tracking":
-        continuous_read() # Updates x and y offset by looking at camera
-    #     print(static_timer)
-    #     if staticflag == False:
-    #         static_timer = static_target
-        if not blinking and random.randrange(500) == 0:
+        if not blinking and random.randrange(20000) == 0:
             blinking = True
             blink_counter = blink_time
             
         # --- blinking state ---
         if blinking:
-            if blink_counter > blink_time - 10:
+            if blink_counter > blink_time_half:
                 blink()
-            elif blink_counter > 0:
+            else:
                 open_lid()
                 
             blink_counter -= 1
-            
-    #         print(blink_counter)
-            if blink_counter == 0:
-                blinking = False
-        else: # Track Mode
-            if (x_offset < -deadzone or x_offset > deadzone) and not staticflag:
-                x_adj_value = map_value(x_offset, -110, 110, x_adj_factor, -x_adj_factor)
+            if blink_counter <= 0:
+                blinking = False            
+        if (offset := comms.grove_read()):
+            x_offset = offset[0]
+            y_offset = offset[1]
+            if (x_offset < -comms.deadzone or x_offset > comms.deadzone) and not comms.staticflag:
+                x_adj_value = comms.map_value(x_offset, -110, 110, x_adj_factor, -x_adj_factor)
                 x_target = max(servo_limits["LR"][0],
                                min(x_target + x_adj_value, servo_limits["LR"][1]))
                 servos["LR"].write(x_target)
 
-            if (y_offset < -deadzone or y_offset > deadzone) and not staticflag:
-                y_adj_value = map_value(y_offset, -110, 110, y_adj_factor, -y_adj_factor)
+            if (y_offset < -comms.deadzone or y_offset > comms.deadzone) and not comms.staticflag:
+                y_adj_value = comms.map_value(y_offset, -110, 110, y_adj_factor, -y_adj_factor)
                 y_target = max(servo_limits["UD"][0],
                                min(y_target + y_adj_value, servo_limits["UD"][1]))
-                control_ud_and_lids(y_target)
-        time.sleep_ms(1)
+            control_ud_and_lids(y_target)      
     elif work_mode == "calibration":
             calibrate()
             time.sleep_ms(500)
@@ -296,7 +329,7 @@ while True:
     elif work_mode == "auto":
             command = random.randint(0,2)
             if command == 0:
-                close_lid()
+                blink()
                 time.sleep_ms(100)
             elif command == 1:
                 blink()
@@ -309,10 +342,8 @@ while True:
                 servos["LR"].write(random.randint(servo_limits["LR"][0],servo_limits["LR"][1]))
                 time.sleep_ms(random.randint(200,400))    
 
+    if work_mode != work_mode_copy: #if work mode has changed, open lid to initialise
+        open_lid()
         
-    if grove_vision_module != True:
-         work_mode = "auto"
-    
-#     if work_mode != work_mode_copy
     
     
