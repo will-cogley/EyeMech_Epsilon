@@ -12,6 +12,7 @@ from picozero import Button
 import time, random, ujson, urandom, sys, select, uselect, math
 
 # Set up the switches and potentiometers
+led_red = Pin(25, Pin.OUT)
 enable = Pin(6, Pin.IN, Pin.PULL_UP)
 mode = Pin(7, Pin.IN, Pin.PULL_UP)
 rx_pin = Pin(1, Pin.IN, Pin.PULL_UP)
@@ -243,6 +244,7 @@ class Comms:
                             
         return None
 
+led_red.value(1)
 x_target = 90
 y_target = 90
 adjustment_factor = 0
@@ -254,7 +256,7 @@ blink_time = 200
 blink_time_half = blink_time / 2
 blinking = False
 
-#Detect if 
+#Detect if
 comms = Comms()
 time.sleep_ms(100) #wait for a short time to see if grove_vision_module flag has been set
 comms.grove_read()
@@ -262,7 +264,9 @@ if comms.grove_vision_module == True:
     work_mode = "tracking"
 else:
     work_mode = "auto"
-        
+    
+led_red.value(0)
+
 while True:
     work_mode_copy = work_mode
     mode_state = not mode.value()
@@ -347,3 +351,4 @@ while True:
         
     
     
+
