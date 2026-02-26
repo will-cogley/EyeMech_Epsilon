@@ -4,7 +4,7 @@ Requires the micropython-servo and picozero libraries
 https://pypi.org/project/micropython-servo/
 https://pypi.org/project/picozero/
 """
-
+ 
 import time
 from machine import Pin, I2C, ADC, UART
 from servo import Servo
@@ -373,3 +373,4 @@ while True:
 #         else:
 #             static_timer -= 1
     time.sleep_ms(1)
+
