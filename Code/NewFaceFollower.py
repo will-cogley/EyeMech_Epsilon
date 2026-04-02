@@ -249,7 +249,7 @@ x_target = 90
 y_target = 90
 adjustment_factor = 0
 
-open_lid()
+#open_lid()
 neutral()
 
 blink_time = 200
@@ -276,7 +276,7 @@ while True:
     else:       
         if enable_state == 1: # switch Controller mode if pin enable is true
             work_mode = "controller"
-        elif work_mode == "controller": #swithch to tracking mode if already controller mode and pin enable is false
+        elif work_mode == "controller": #swithch to tracking mode if already controller mode and pin enable is false  
             work_mode = "tracking"
 
     if work_mode == "tracking":
@@ -293,7 +293,7 @@ while True:
                 
             blink_counter -= 1
             if blink_counter <= 0:
-                blinking = False            
+                blinking = False       
         if (offset := comms.grove_read()):
             x_offset = offset[0]
             y_offset = offset[1]
@@ -307,14 +307,17 @@ while True:
                 y_adj_value = comms.map_value(y_offset, -110, 110, y_adj_factor, -y_adj_factor)
                 y_target = max(servo_limits["UD"][0],
                                min(y_target + y_adj_value, servo_limits["UD"][1]))
-            control_ud_and_lids(y_target)      
+            control_ud_and_lids(y_target)
     elif work_mode == "calibration":
             calibrate()
-            time.sleep_ms(500)
-            work_mode = "initilisation"
-    elif work_mode == "initilisation":
+            comms.grove_read()
+            work_mode = "initialisation"
+    elif work_mode == "initialisation":
             blink()
-            work_mode = "tracking"
+            if comms.grove_vision_module == True:
+                work_mode = "tracking"
+            else:
+                work_mode = "auto"                   
     elif work_mode == "controller":
             # Reading sensors
             UD_value = UD.read_u16()
@@ -347,8 +350,5 @@ while True:
                 time.sleep_ms(random.randint(200,400))    
 
     if work_mode != work_mode_copy: #if work mode has changed, open lid to initialise
-        open_lid()
-        
+        neutral()
     
-    
-
